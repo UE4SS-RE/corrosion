@@ -237,12 +237,45 @@ function(_corrosion_copy_byproduct_deferred target_name output_dir_prop_names ca
         message(FATAL_ERROR "Unexpected additional arguments")
     endif()
 
-    foreach(output_dir_prop_name ${output_dir_prop_names})
-        get_target_property(output_dir ${target_name} "${output_dir_prop_name}")
+    # Try the target itself and then its static/shared variants
+    set(all_targets_to_check "${target_name}")
+    if(TARGET "${target_name}-static")
+        list(APPEND all_targets_to_check "${target_name}-static")
+    endif()
+    if(TARGET "${target_name}-shared")
+        list(APPEND all_targets_to_check "${target_name}-shared")
+    endif()
+
+    set(output_dir "")
+    foreach(tgt IN LISTS all_targets_to_check)
+        foreach(output_dir_prop_name ${output_dir_prop_names})
+            get_target_property(tmp_dir ${tgt} "${output_dir_prop_name}")
+            if(tmp_dir)
+                set(output_dir "${tmp_dir}")
+                break()
+            endif()
+        endforeach()
         if(output_dir)
             break()
         endif()
     endforeach()
+
+    # Fallback: try CMAKE_* variables
+    if(NOT output_dir)
+        foreach(output_dir_prop_name ${output_dir_prop_names})
+            string(TOUPPER "${output_dir_prop_name}" upper_name)
+            if(DEFINED "CMAKE_${upper_name}")
+                set(output_dir "${CMAKE_${upper_name}}")
+                break()
+            endif()
+        endforeach()
+    endif()
+
+    # Final fallback: use current binary dir
+    if(NOT output_dir)
+        message(WARNING "Corrosion fallback: No output directory found for target `${target_name}`. Defaulting to `${CMAKE_CURRENT_BINARY_DIR}`")
+        set(output_dir "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
 
     # A Genex expanding to the output directory depending on the configuration.
     set(multiconfig_out_dir_genex "")
@@ -260,68 +293,52 @@ function(_corrosion_copy_byproduct_deferred target_name output_dir_prop_names ca
             set(curr_out_dir "${output_dir_curr_config}")
         elseif(output_dir)
             string(GENEX_STRIP "${output_dir}" output_dir_no_genex)
-            # Only add config dir if there is no genex in here. See
-            # https://cmake.org/cmake/help/latest/prop_tgt/RUNTIME_OUTPUT_DIRECTORY.html
-            # Logic duplicated from _corrosion_set_imported_location_deferred
             if(output_dir STREQUAL output_dir_no_genex)
                 set(curr_out_dir "${output_dir}/${config_type}")
             else()
                 set(curr_out_dir "${output_dir}")
             endif()
         else()
-            # Fallback to the default directory. We do not append the configuration directory here
-            # and instead let CMake do this, since otherwise the resolving of dynamic library
-            # imported paths may fail.
             set(curr_out_dir "${CMAKE_CURRENT_BINARY_DIR}")
         endif()
+
         set(multiconfig_out_dir_genex "${multiconfig_out_dir_genex}$<$<CONFIG:${config_type}>:${curr_out_dir}>")
     endforeach()
 
     if(COR_IS_MULTI_CONFIG)
         set(output_dir "${multiconfig_out_dir_genex}")
-    else()
-        if(NOT output_dir)
-            # Fallback to default directory.
-            set(output_dir "${CMAKE_CURRENT_BINARY_DIR}")
-        endif()
     endif()
 
-    # Append .exe suffix for executable by-products if the target is windows or if it's a host
-    # build and the host is Windows.
+    # Handle .exe suffix for executables
     get_target_property(target_type "${target_name}" TYPE)
     if (target_type STREQUAL "EXECUTABLE")
         list(LENGTH file_names list_len)
         if(NOT list_len EQUAL "1")
-            message(FATAL_ERROR
-                    "Internal error: Exactly one filename should be passed for executable types.")
+            message(FATAL_ERROR "Internal error: Exactly one filename should be passed for executable types.")
         endif()
         _corrosion_bin_target_suffix(${target_name} "suffix")
         if(suffix AND (NOT "${file_names}" MATCHES "\.pdb$"))
-            # For executable targets we know / checked that only one file will be passed.
             string(APPEND file_names "${suffix}")
         endif()
     endif()
+
     set(src_file_names "${file_names}")
     if(Rust_CARGO_TARGET_ENV STREQUAL "gnullvm")
-        # Workaround for cargo not exposing implibs yet.
         list(TRANSFORM src_file_names PREPEND "deps/" REGEX "\.dll\.a$")
     endif()
     list(TRANSFORM src_file_names PREPEND "${cargo_build_dir}/")
     list(TRANSFORM file_names PREPEND "${output_dir}/" OUTPUT_VARIABLE dst_file_names)
+
     message(DEBUG "Adding command to copy byproducts `${file_names}` to ${dst_file_names}")
+
     add_custom_command(TARGET _cargo-build_${target_name}
-                        POST_BUILD
-                        # output_dir may contain a Generator expression.
-                        COMMAND  ${CMAKE_COMMAND} -E make_directory "${output_dir}"
-                        COMMAND
-                        ${CMAKE_COMMAND} -E copy_if_different
-                            # tested to work with both multiple files and paths with spaces
-                            ${src_file_names}
-                            "${output_dir}"
-                        BYPRODUCTS ${dst_file_names}
-                        COMMENT "Copying byproducts `${file_names}` to ${output_dir}"
-                        VERBATIM
-                        COMMAND_EXPAND_LISTS
+        POST_BUILD
+        COMMAND  ${CMAKE_COMMAND} -E make_directory "${output_dir}"
+        COMMAND  ${CMAKE_COMMAND} -E copy_if_different ${src_file_names} "${output_dir}"
+        BYPRODUCTS ${dst_file_names}
+        COMMENT "Copying byproducts `${file_names}` to ${output_dir}"
+        VERBATIM
+        COMMAND_EXPAND_LISTS
     )
 endfunction()
 
