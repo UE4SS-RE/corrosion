@@ -243,6 +243,16 @@ function(_corrosion_copy_byproduct_deferred target_name output_dir_prop_names ca
             break()
         endif()
     endforeach()
+    # Fallback to CMAKE_*_OUTPUT_DIRECTORY variables
+    if(NOT output_dir)
+        foreach(output_dir_prop_name ${output_dir_prop_names})
+            string(TOUPPER "${output_dir_prop_name}" upper_name)
+            if(DEFINED "CMAKE_${upper_name}")
+                set(output_dir "${CMAKE_${upper_name}}")
+                break()
+            endif()
+        endforeach()
+    endif()
 
     # A Genex expanding to the output directory depending on the configuration.
     set(multiconfig_out_dir_genex "")
@@ -255,6 +265,7 @@ function(_corrosion_copy_byproduct_deferred target_name output_dir_prop_names ca
                 break()
             endif()
         endforeach()
+
 
         if(output_dir_curr_config)
             set(curr_out_dir "${output_dir_curr_config}")
